@@ -1,0 +1,98 @@
+name: Build & Deploy to Azure VMSS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: acrmyappdevvxwb1d
+  ACR_LOGIN_SERVER: acrmyappdevvxwb1d.azurecr.io
+  RESOURCE_GROUP: rg-myappdev-vxwb1d
+  VMSS_NAME: vmss-myappdev
+  KEY_VAULT_NAME: kv-myappdev-vxwb1d
+  IMAGE_NAME: myapp
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-push:
+    name: Build image in ACR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Build & push image to ACR
+        run: |
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE_NAME:$IMAGE_TAG" \
+            --image "$IMAGE_NAME:latest" \
+            --file Dockerfile \
+            .
+
+  deploy:
+    name: Deploy to VMSS instances
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Substitute variables in deploy script
+        run: |
+          export ACR_NAME="$ACR_NAME"
+          export IMAGE_NAME="$IMAGE_NAME"
+          export IMAGE_TAG="$IMAGE_TAG"
+          envsubst < scripts/vmss-deploy-app.sh > /tmp/vmss-remote.sh
+          cat /tmp/vmss-remote.sh
+
+      - name: Run deploy script on each VMSS instance
+        run: |
+          set -euo pipefail
+
+          IDS=$(az vmss list-instances \
+            -g "$RESOURCE_GROUP" \
+            -n "$VMSS_NAME" \
+            --query "[].instanceId" -o tsv)
+
+          if [ -z "$IDS" ]; then
+            echo "::error::No VMSS instances found for $VMSS_NAME in $RESOURCE_GROUP"
+            exit 1
+          fi
+
+          for IID in $IDS; do
+            echo "==> Deploying to instance $IID"
+            az vmss run-command invoke \
+              -g "$RESOURCE_GROUP" \
+              -n "$VMSS_NAME" \
+              --instance-id "$IID" \
+              --command-id RunShellScript \
+              --scripts @/tmp/vmss-remote.sh
+          done
+
+  sync-secrets:
+    name: Sync secrets to Key Vault
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: vars.SYNC_KEY_VAULT == 'true'
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Upload .env to Key Vault
+        run: |
+          az keyvault secret set \
+            --vault-name "$KEY_VAULT_NAME" \
+            --name "app-env" \
+            --value "${{ secrets.APP_ENV }}"
