@@ -16,6 +16,7 @@ env:
 
 jobs:
   build-and-push:
+    environment: Azure
     name: Build image in ACR
     runs-on: ubuntu-latest
     steps:
@@ -25,6 +26,31 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Debug secret and variable presence (safe)
+        shell: bash
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          ACR_NAME: ${{ env.ACR_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          VMSS_NAME: ${{ env.VMSS_NAME }}
+          KEY_VAULT_NAME: ${{ env.KEY_VAULT_NAME }}
+        run: |
+          set -euo pipefail
+          check_var() {
+            local name="$1"
+            local value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "::warning::$name is empty or not set"
+            else
+              echo "::notice::$name is set"
+            fi
+          }
+          check_var AZURE_CREDENTIALS
+          check_var ACR_NAME
+          check_var RESOURCE_GROUP
+          check_var VMSS_NAME
+          check_var KEY_VAULT_NAME
 
       - name: Build & push image to ACR
         run: |
@@ -47,13 +73,39 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Debug secret and variable presence (safe)
+        shell: bash
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          ACR_NAME: ${{ env.ACR_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          VMSS_NAME: ${{ env.VMSS_NAME }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          check_var() {
+            local name="$1"
+            local value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "::warning::$name is empty or not set"
+            else
+              echo "::notice::$name is set"
+            fi
+          }
+          check_var AZURE_CREDENTIALS
+          check_var ACR_NAME
+          check_var RESOURCE_GROUP
+          check_var VMSS_NAME
+          check_var IMAGE_NAME
+          check_var IMAGE_TAG
+
       - name: Substitute variables in deploy script
         run: |
           export ACR_NAME="$ACR_NAME"
           export IMAGE_NAME="$IMAGE_NAME"
           export IMAGE_TAG="$IMAGE_TAG"
           envsubst < scripts/vmss-deploy-app.sh > /tmp/vmss-remote.sh
-          cat /tmp/vmss-remote.sh
 
       - name: Run deploy script on each VMSS instance
         run: |
@@ -89,6 +141,27 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Debug secret and variable presence (safe)
+        shell: bash
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          APP_ENV: ${{ secrets.APP_ENV }}
+          KEY_VAULT_NAME: ${{ env.KEY_VAULT_NAME }}
+        run: |
+          set -euo pipefail
+          check_var() {
+            local name="$1"
+            local value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "::warning::$name is empty or not set"
+            else
+              echo "::notice::$name is set"
+            fi
+          }
+          check_var AZURE_CREDENTIALS
+          check_var APP_ENV
+          check_var KEY_VAULT_NAME
 
       - name: Upload .env to Key Vault
         run: |
