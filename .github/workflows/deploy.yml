@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
 
 env:
-  ACR_NAME: acrmyappdevvxwb1d
-  ACR_LOGIN_SERVER: acrmyappdevvxwb1d.azurecr.io
-  RESOURCE_GROUP: rg-myappdev-vxwb1d
+  ACR_NAME: acrmyappdevf7j4li
+  ACR_LOGIN_SERVER: acrmyappdevf7j4li.azurecr.io
+  RESOURCE_GROUP: rg-myappdev-f7j4li
   VMSS_NAME: vmss-myappdev
-  KEY_VAULT_NAME: kv-myappdev-vxwb1d
-  IMAGE_NAME: myapp
+  KEY_VAULT_NAME: kv-myappdev-f7j4li
+  IMAGE_NAME: myappdev
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
