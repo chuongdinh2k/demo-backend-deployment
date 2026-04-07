@@ -1,0 +1,126 @@
+# Build image in ACR, deploy container on each VMSS instance, optionally upload .env to Key Vault.
+#
+# Prerequisites:
+# - Azure Resource Manager service connection; set AZURE_SUBSCRIPTION to its name.
+# - RESOURCE_GROUP, ACR_NAME, VMSS_NAME (match Terraform outputs).
+# - Key Vault sync: set syncKeyVault to true, KEY_VAULT_NAME, create a Library secure file
+#   whose name matches dotenvSecureFile (default dotenv).
+
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  AZURE_SUBSCRIPTION: ""
+  RESOURCE_GROUP: ""
+  ACR_NAME: ""
+  VMSS_NAME: ""
+  KEY_VAULT_NAME: ""
+  IMAGE_NAME: "myapp"
+  IMAGE_TAG: "$(Build.BuildId)"
+  syncKeyVault: "false"
+  dotenvSecureFile: "dotenv"
+  keyVaultSecretName: "app-env"
+
+stages:
+  - stage: BuildAndPush
+    displayName: Build image in ACR
+    jobs:
+      - job: AcrBuild
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: AzureCLI@2
+            displayName: az acr build (no local Docker daemon required)
+            inputs:
+              azureSubscription: $(AZURE_SUBSCRIPTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                test -f Dockerfile
+                az acr build \
+                  --registry "$(ACR_NAME)" \
+                  --image "$(IMAGE_NAME):$(IMAGE_TAG)" \
+                  --file Dockerfile \
+                  "$(Build.SourcesDirectory)"
+
+  - stage: DeployVMSS
+    displayName: Roll out container on VMSS instances
+    dependsOn: BuildAndPush
+    jobs:
+      - job: Rollout
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: AzureCLI@2
+            displayName: Run deploy script on each VMSS instance
+            inputs:
+              azureSubscription: $(AZURE_SUBSCRIPTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                RG="$(RESOURCE_GROUP)"
+                VMSS="$(VMSS_NAME)"
+                export ACR_NAME="$(ACR_NAME)"
+                export IMAGE_NAME="$(IMAGE_NAME)"
+                export IMAGE_TAG="$(IMAGE_TAG)"
+                SCRIPT_SRC="$(Build.SourcesDirectory)/scripts/vmss-deploy-app.sh"
+                test -f "$SCRIPT_SRC"
+                envsubst < "$SCRIPT_SRC" > "$(Agent.TempDirectory)/vmss-remote.sh"
+
+                mapfile -t IDS < <(az vmss list-instances -g "$RG" -n "$VMSS" --query "[].instanceId" -o tsv)
+                if [ "${#IDS[@]}" -eq 0 ]; then
+                  echo "No VMSS instances found for $VMSS in $RG"
+                  exit 1
+                fi
+
+                for IID in "${IDS[@]}"; do
+                  echo "Deploying to instance $IID"
+                  az vmss run-command invoke \
+                    -g "$RG" \
+                    -n "$VMSS" \
+                    --instance-id "$IID" \
+                    --command-id RunShellScript \
+                    --scripts @"$(Agent.TempDirectory)/vmss-remote.sh"
+                done
+
+  - stage: SyncSecrets
+    displayName: Upload secure dotenv file to Key Vault
+    dependsOn: DeployVMSS
+    condition: and(succeeded(), eq(variables['syncKeyVault'], 'true'))
+    jobs:
+      - job: PushDotenv
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: DownloadSecureFile@1
+            name: dotenv
+            inputs:
+              secureFile: $(dotenvSecureFile)
+
+          - task: AzureCLI@2
+            displayName: az keyvault secret set
+            inputs:
+              azureSubscription: $(AZURE_SUBSCRIPTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                VAULT="$(KEY_VAULT_NAME)"
+                if [ -z "$VAULT" ]; then
+                  echo "Set pipeline variable KEY_VAULT_NAME (Terraform output key_vault_name)."
+                  exit 1
+                fi
+                az keyvault secret set \
+                  --vault-name "$VAULT" \
+                  --name "$(keyVaultSecretName)" \
+                  --file "$(dotenv.secureFilePath)"
